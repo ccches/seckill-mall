@@ -24,5 +24,10 @@ mybatis-plus:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
 
+rocketmq:
+  name-server: localhost:9876
+  producer:
+    group: seckill-producer
+
 server:
   port: 8080

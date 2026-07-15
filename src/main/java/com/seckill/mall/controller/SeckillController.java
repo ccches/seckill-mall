@@ -1,5 +1,7 @@
 package com.seckill.mall.controller;
 
+import com.seckill.mall.common.BusinessException;
+import com.seckill.mall.common.ErrorCode;
 import com.seckill.mall.common.Result;
 import com.seckill.mall.model.entity.SeckillActivity;
 import com.seckill.mall.service.SeckillService;
@@ -37,11 +39,20 @@ public class SeckillController {
         return Result.success(seckillService.getSeckillPath(activityId, userId));
     }
 
+    private final CaptchaController captchaController;
+
     @PostMapping("/{activityId}/execute")
     public Result<?> execute(@PathVariable Long activityId,
                               @RequestParam String md5Key,
+                              @RequestParam String captcha,
                               HttpServletRequest request) {
         Long userId = (Long) request.getAttribute("userId");
+
+        // 验证码校验
+        if (!captchaController.validate(userId, captcha)) {
+            throw new BusinessException(ErrorCode.CAPTCHA_ERROR);
+        }
+
         String orderNo = seckillService.executeSeckill(activityId, userId, md5Key);
         return Result.success(java.util.Map.of("orderNo", orderNo, "status", "QUEUING"));
     }

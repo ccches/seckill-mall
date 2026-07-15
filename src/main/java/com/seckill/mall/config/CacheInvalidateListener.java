@@ -39,9 +39,15 @@ public class CacheInvalidateListener implements MessageListener {
     @Override
     public void onMessage(Message message, byte[] pattern) {
         try {
-            Long productId = Long.valueOf(new String(message.getBody()));
-            productService.evictCache(productId);
-            log.info("收到失效广播，已清除本地缓存: productId={}", productId);
+            String body = new String(message.getBody());
+            if ("all".equals(body)) {
+                // 清所有缓存（简化处理：依赖 Caffeine TTL 自动过期）
+                log.info("收到全局缓存失效广播");
+            } else {
+                Long productId = Long.valueOf(body);
+                productService.evictCache(productId);
+                log.info("收到失效广播，已清除本地缓存: productId={}", productId);
+            }
         } catch (Exception e) {
             log.error("Pub/Sub 解析失败", e);
         }

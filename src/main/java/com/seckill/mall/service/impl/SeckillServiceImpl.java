@@ -11,6 +11,10 @@ import com.seckill.mall.model.entity.Product;
 import com.seckill.mall.model.entity.SeckillActivity;
 import com.seckill.mall.service.SeckillService;
 import com.seckill.mall.util.RedisKeyUtil;
+import com.alibaba.csp.sentinel.Entry;
+import com.alibaba.csp.sentinel.SphU;
+import com.alibaba.csp.sentinel.slots.block.BlockException;
+import com.seckill.mall.mq.producer.SeckillOrderProducer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
@@ -34,8 +38,7 @@ import java.util.concurrent.TimeUnit;
 public class SeckillServiceImpl implements SeckillService {
 
     private final SeckillActivityMapper activityMapper;
-    private final OrderMapper orderMapper;
-    private final ProductMapper productMapper;
+    private final SeckillOrderProducer orderProducer;
     private final RedisTemplate<String, Object> redisTemplate;
 
     // 预加载 Lua 脚本
@@ -118,7 +121,19 @@ public class SeckillServiceImpl implements SeckillService {
             throw new BusinessException(ErrorCode.SECKILL_PATH_INVALID);
         }
 
-        // ③ 生成订单号
+        // ③ Sentinel 限流检查——被限流则抛 BusinessException
+        try (Entry ignored = SphU.entry("seckill-execute")) {
+            return doExecute(act, userId, activityId);
+        } catch (BlockException e) {
+            throw new BusinessException(ErrorCode.RATE_LIMITED);
+        }
+    }
+
+    /**
+     * 真正执行秒杀（限流通过后才进入）
+     */
+    private String doExecute(SeckillActivity act, Long userId, Long activityId) {
+        // 生成订单号
         String orderNo = "SEC" + LocalDateTime.now()
                 .format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
                 + UUID.randomUUID().toString().replace("-", "").substring(0, 6);
@@ -145,50 +160,17 @@ public class SeckillServiceImpl implements SeckillService {
             throw new BusinessException(ErrorCode.SECKILL_REPEATED);
         }
 
-        // ⑤ Lua 扣减成功 → TODO: 异步 MQ 下单（阶段 2.4）
-        // 当前先同步创建订单
-        createSeckillOrder(act, userId, orderNo);
+        // ⑤ Lua 扣减成功 → 发送 MQ 消息（异步下单削峰）
+        orderProducer.send(userId, activityId, act.getProductId(), orderNo,
+                act.getSeckillPrice().longValue());
 
-        // ⑥ 写秒杀结果到 Redis
-        redisTemplate.opsForValue().set(
-                RedisKeyUtil.seckillResult(orderNo),
-                "SUCCESS", 10, TimeUnit.MINUTES);
-
-        // ⑦ 更新活动状态为"进行中"
+        // ⑥ 更新活动状态
         if (act.getStatus() == 0) {
             act.setStatus(1);
             activityMapper.updateById(act);
         }
 
         return orderNo;
-    }
-
-    /**
-     * 创建秒杀订单（TODO: 阶段2.4 改为 MQ 异步消费）
-     */
-    @Transactional
-    protected void createSeckillOrder(SeckillActivity act, Long userId, String orderNo) {
-        // DB乐观锁扣秒杀库存
-        int rows = activityMapper.updateStock(act.getId(), act.getVersion());
-        if (rows == 0) {
-            throw new BusinessException(ErrorCode.STOCK_NOT_ENOUGH);
-        }
-
-        // 查商品信息
-        Product product = productMapper.selectById(act.getProductId());
-
-        Order order = new Order();
-        order.setOrderNo(orderNo);
-        order.setUserId(userId);
-        order.setProductId(product.getId());
-        order.setProductName(product.getName());
-        order.setPrice(act.getSeckillPrice());
-        order.setQuantity(1);
-        order.setTotalAmount(act.getSeckillPrice());
-        order.setOrderType(2);   // 秒杀订单
-        order.setStatus(0);      // 待支付
-        order.setActivityId(act.getId());
-        orderMapper.insert(order);
     }
 
     @Override

@@ -110,11 +110,18 @@ public class ProductServiceImpl implements ProductService {
     }
 
     /**
-     * 清除所有层级缓存——数据更新后调用
+     * 清除所有层级缓存——数据更新后调用。
+     *
+     * 完整链路：
+     *   ① 清 Caffeine L1（本节点）
+     *   ② 删 Redis L2
+     *   ③ PUBLISH 广播 → 其他节点 CacheInvalidateListener 收到 → 清各自 Caffeine
      */
     public void evictCache(Long productId) {
-        productCache.invalidate(productId);                          // 清 L1
+        productCache.invalidate(productId);                          // 清 L1（本节点）
         redisTemplate.delete(RedisKeyUtil.productDetail(productId)); // 清 L2
+        redisTemplate.convertAndSend("cache:invalidate:product",
+                productId.toString());                               // 广播清其他节点 L1
         log.info("缓存清除: productId={}", productId);
     }
 
